@@ -253,8 +253,10 @@ func run() error {
 	}
 }
 func turn(ctx context.Context, input *terminal.Input, s *session.Session, client *provider.Client, workspace *tools.Workspace, root, mode string, window int, messages []provider.Message, onRequest func()) ([]provider.Message, error) {
+	var trace commandTrace
+	defer trace.print(os.Stdout)
 	for range 32 {
-		request := append([]provider.Message{{Role: "system", Content: "You are Kero, a coding assistant. Inspect relevant files before changing them, use the available tools, and report results accurately. Work in the current workspace."}}, messages...)
+		request := append([]provider.Message{{Role: "system", Content: "You are Kero, a coding assistant. Inspect relevant files before changing them, use the available tools, and work in the current workspace. Report only actions and verification actually performed in this conversation, based on tool calls and their results. Never claim that a command, test, formatter, or check ran unless you ran it and observed its result. Distinguish requests denied or cancelled from executed commands, and state when verification was not performed."}}, messages...)
 		if window <= 0 {
 			window = 32768
 		}
@@ -306,6 +308,9 @@ func turn(ctx context.Context, input *terminal.Input, s *session.Session, client
 			}
 			confirm := input.Confirm
 			fmt.Printf("\n工具 %d/%d  %s\n", index+1, len(m.ToolCalls), terminal.Safe(call.Function.Name))
+			if command := trace.record(call); command != "" {
+				fmt.Printf("命令请求：\n%s\n", terminal.Safe(command))
+			}
 			result := workspace.Execute(ctx, root, mode, call, confirm)
 			t := provider.Message{Role: "tool", ToolCallID: call.ID, Content: result}
 			if e = s.AppendMessage(t); e != nil {
