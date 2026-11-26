@@ -106,6 +106,85 @@ func TestConfigureClearsAPIKeyEnvironment(t *testing.T) {
 	}
 }
 
+func TestConfigureRetriesInvalidFields(t *testing.T) {
+	writeTestConfig(t, `{"base_url":"http://localhost:8000/v1","model":"old","permission":"ask"}`)
+	old, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := "bad-url\nhttps://example.com/v1\nnew-model\nBAD=KEY\nGOOD_KEY\ninvalid\nworkspace\n"
+	got, err := Configure(bufio.NewReader(strings.NewReader(input)), old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.BaseURL != "https://example.com/v1" || got.Model != "new-model" || got.APIKeyEnv != "GOOD_KEY" || got.Permission != "workspace" {
+		t.Fatalf("unexpected configuration: %+v", got)
+	}
+	loaded, err := Load()
+	if err != nil || !reflect.DeepEqual(got, loaded) {
+		t.Fatalf("saved configuration = %+v, %v", loaded, err)
+	}
+}
+
+func TestConfigureCancellationDoesNotSave(t *testing.T) {
+	data := `{"base_url":"http://localhost:8000/v1","model":"old","permission":"ask"}`
+	path := writeTestConfig(t, data)
+	old, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Configure(bufio.NewReader(strings.NewReader("https://example.com/v1\nnew-model\n")), old)
+	if err == nil || !reflect.DeepEqual(got, old) {
+		t.Fatalf("cancellation = %+v, %v", got, err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil || string(b) != data {
+		t.Fatalf("config changed on cancellation: %q, %v", b, err)
+	}
+}
+
+func TestConfigureMenuProfilesAndDefault(t *testing.T) {
+	writeTestConfig(t, `{"default_profile":"work","permission":"ask","profiles":{"work":{"base_url":"https://work.example/v1","model":"work","context_tokens":32000},"fast":{"base_url":"https://fast.example/v1","model":"fast"}},"routing":{"enabled":true,"fast_profile":"fast"}}`)
+	old, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := "1\nnew\nhttps://new.example/v1\nnew-model\nNEW_KEY\n-1\n64000\n2\nmissing\nnew\n3\nauto\n4\n"
+	got, err := ConfigureMenu(bufio.NewReader(strings.NewReader(input)), old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DefaultProfile != "new" || got.Model != "new-model" || got.Profiles["new"].ContextTokens != 64000 || got.Permission != "auto" {
+		t.Fatalf("unexpected configuration: %+v", got)
+	}
+	if got.Profiles["work"] != old.Profiles["work"] || got.Profiles["fast"] != old.Profiles["fast"] || got.Routing != old.Routing || len(old.Profiles) != 2 {
+		t.Fatal("menu modified existing profiles, routing, or input")
+	}
+	loaded, err := Load()
+	if err != nil || !reflect.DeepEqual(got, loaded) {
+		t.Fatalf("saved configuration = %+v, %v", loaded, err)
+	}
+}
+
+func TestConfigureMenuCancellationDoesNotSave(t *testing.T) {
+	data := `{"base_url":"http://localhost:8000/v1","model":"old","permission":"ask"}`
+	for _, input := range []string{"1\nnew\nhttps://new.example/v1\nmodel\n\n0\n0\n", "3\nauto\n"} {
+		path := writeTestConfig(t, data)
+		old, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := ConfigureMenu(bufio.NewReader(strings.NewReader(input)), old)
+		if err == nil || !reflect.DeepEqual(got, old) {
+			t.Fatalf("cancellation = %+v, %v", got, err)
+		}
+		b, err := os.ReadFile(path)
+		if err != nil || string(b) != data {
+			t.Fatalf("config changed on cancellation: %q, %v", b, err)
+		}
+	}
+}
+
 func TestLoadImplicitDefault(t *testing.T) {
 	for _, tt := range []struct {
 		name, data, profile, model string
