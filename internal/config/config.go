@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,10 @@ type Config struct {
 	Model      string `json:"model"`
 	APIKeyEnv  string `json:"api_key_env,omitempty"`
 	Permission string `json:"permission"`
+
+	DefaultProfile string             `json:"default_profile,omitempty"`
+	Profiles       map[string]Profile `json:"profiles,omitempty"`
+	Routing        RoutingConfig      `json:"routing,omitzero"`
 }
 
 func Path() (string, error) {
@@ -37,11 +42,30 @@ func Load() (Config, error) {
 	if e = json.Unmarshal(b, &c); e != nil {
 		return c, e
 	}
-	return c, c.Validate()
+	if e = c.Validate(); e != nil {
+		return c, e
+	}
+	c.applyDefaultProfile()
+	return c, nil
 }
 func (c Config) Validate() error {
-	if strings.TrimSpace(c.BaseURL) == "" || strings.TrimSpace(c.Model) == "" {
-		return errors.New("base_url and model are required")
+	defaultName := c.defaultProfileName()
+	if _, e := c.SelectProfile(defaultName); e != nil {
+		return e
+	}
+	for _, name := range c.ProfileNames() {
+		if name == "" {
+			return errors.New("profile names must be nonempty and have no surrounding whitespace")
+		}
+		if name == defaultName {
+			continue
+		}
+		if _, e := c.SelectProfile(name); e != nil {
+			return e
+		}
+	}
+	if e := c.validateRouting(); e != nil {
+		return e
 	}
 	switch c.Permission {
 	case "ask", "workspace", "auto":
@@ -53,6 +77,7 @@ func Save(c Config) error {
 	if e := c.Validate(); e != nil {
 		return e
 	}
+	c.applyDefaultProfile()
 	p, e := Path()
 	if e != nil {
 		return e
@@ -68,6 +93,11 @@ func Save(c Config) error {
 }
 func Configure(in *bufio.Reader, old Config) (Config, error) {
 	c := old
+	name := c.defaultProfileName()
+	profile, named := c.Profiles[name]
+	if named {
+		c.BaseURL, c.Model, c.APIKeyEnv = profile.BaseURL, profile.Model, profile.APIKeyEnv
+	}
 	ask := func(label, value string) (string, error) {
 		fmt.Printf("%s [%s]: ", label, value)
 		s, e := in.ReadString('\n')
@@ -87,8 +117,12 @@ func Configure(in *bufio.Reader, old Config) (Config, error) {
 	if c.Model, e = ask("Model ID", c.Model); e != nil {
 		return c, e
 	}
-	if c.APIKeyEnv, e = ask("API key environment variable (optional)", c.APIKeyEnv); e != nil {
+	fmt.Println("API key: enter an environment variable NAME (for example OPENAI_API_KEY), not the key value. Leave empty for an unauthenticated local gateway; enter - to clear the current setting.")
+	if c.APIKeyEnv, e = ask("API key environment variable name (optional; - clears)", c.APIKeyEnv); e != nil {
 		return c, e
+	}
+	if c.APIKeyEnv == "-" {
+		c.APIKeyEnv = ""
 	}
 	if c.Permission == "" {
 		c.Permission = "ask"
@@ -97,8 +131,14 @@ func Configure(in *bufio.Reader, old Config) (Config, error) {
 	if c.Permission, e = ask("Permission mode", c.Permission); e != nil {
 		return c, e
 	}
-	if e = c.Validate(); e != nil {
+	if named {
+		c.Profiles = maps.Clone(c.Profiles)
+		profile.BaseURL, profile.Model, profile.APIKeyEnv = c.BaseURL, c.Model, c.APIKeyEnv
+		c.Profiles[name] = profile
+		c.DefaultProfile = name
+	}
+	if e = Save(c); e != nil {
 		return c, e
 	}
-	return c, Save(c)
+	return c, nil
 }

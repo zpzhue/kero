@@ -1,21 +1,48 @@
 # Kero
 
-Kero is a local coding assistant using Go and an OpenAI Chat Completions-compatible API. It supports Windows, macOS and Linux.
+Kero 是使用 Go 开发的本地编程助手，支持 OpenAI Chat Completions 兼容 API，可在 Windows、macOS 和 Linux 上运行。
 
-## Build and run
+## 构建与运行
 
-Install Go 1.24 or newer, then run `go build -o kero ./cmd/kero` and launch `kero` from the workspace to inspect. The first launch asks for the API base URL, model ID, optional API key environment variable and permission mode. The key is read from the environment and is not written to the configuration file. A local endpoint without authentication does not require a key.
+安装 Go 1.24 或更高版本后，运行 `go build -o kero ./cmd/kero`，然后在需要操作的工作区中启动 `kero`。首次启动时，程序会询问 API 基础地址、模型 ID、可选的 API 密钥环境变量名以及权限模式。密钥从环境变量读取，不会写入配置文件；无需认证的本地接口可以不配置密钥。
 
-The configuration is stored in the operating system's user configuration directory under `kero/config.json`. Run `kero config` to change it or `kero config path` to find it. Model IDs and endpoint URLs are supplied by your API provider; Magpie's local gateway can be used for testing but is not required.
+配置保存在操作系统用户配置目录下的 `kero/config.json`。运行 `kero config` 可以修改配置，运行 `kero config path` 可以查看配置文件路径。模型 ID 和接口地址由 API 服务提供商提供；Magpie 本地网关可用于测试，但不是必需的。
 
-## Interaction
+运行 `kero config` 时，请填写**环境变量名**（例如 `OPENAI_API_KEY`），而不是 API 密钥本身。使用无需认证的本地网关时，可以留空；如需清除已配置的环境变量名，请在该提示处输入 `-`。
 
-Enter submits a message; end a line with `\` to continue it on the next line. Use the arrow keys to browse input history, and `/exit` to exit. Kero prints a session ID at startup; run `kero --resume <id>` from the same workspace to continue. Sessions are stored as JSONL under the user configuration directory. Session logs and input history can contain source code and other sensitive information.
+可以在 `config.json` 中配置多个命名的服务和模型，例如：
 
-## Permissions
+```json
+{
+  "permission": "ask",
+  "default_profile": "general",
+  "profiles": {
+    "general": {"base_url": "https://api.example.com/v1", "model": "model-id", "api_key_env": "KERO_API_KEY", "context_tokens": 32768},
+    "fast": {"base_url": "http://127.0.0.1:3425/v1", "model": "provider/model", "context_tokens": 32768},
+    "complex": {"base_url": "https://api.example.com/v1", "model": "strong-model", "api_key_env": "KERO_API_KEY", "context_tokens": 65536}
+  },
+  "routing": {"enabled": true, "fast_profile": "fast", "complex_profile": "complex"}
+}
+```
 
-- `ask`: confirm each file edit and command.
-- `workspace`: allow edits inside the workspace and confirm commands.
-- `auto`: allow edits inside the workspace and execute commands without confirmation.
+原有的单模型配置仍然受支持。API 密钥是可选的；如需认证，程序会从指定的环境变量读取密钥。自动路由默认关闭；启用后，程序根据保守的关键词规则选择快速或复杂任务配置，无法分类的任务使用默认配置。`/models` 列出模型配置，`/model <名称>` 为当前会话选择配置，`/model auto` 恢复配置中的自动或默认路由。路由决策会记录到会话日志中。
 
-File tools are restricted to the workspace. Commands are not sandboxed and can access other files or the network regardless of the workspace. Choose `auto` only when you trust the model and the workspace. Configuration changes take effect on the next launch.
+`context_tokens` 用于设置模型的上下文窗口预算；未设置时默认使用 32,768 个 token。请求预算基于保守的字节数估算，并为输出预留八分之一的窗口。程序可能在请求中省略较早的完整对话轮次，但不会删除 JSONL 历史。估算值不能保证所有服务提供商都会接受该请求。
+
+## 交互
+
+按 Enter 提交消息；在行尾输入 `\` 可在下一行继续输入。使用方向键浏览输入历史，输入 `/exit` 退出。Kero 启动时会显示会话 ID；可在同一工作区运行 `kero --resume <id>` 继续会话。会话以 JSONL 格式保存在用户配置目录中。会话日志和输入历史可能包含源代码及其他敏感信息。
+
+交互命令：`/help` 显示帮助；`/status` 显示当前会话、工作区、模型和权限模式；`/sessions` 列出当前工作区的会话并按编号选择（输入 `0` 取消）；`/resume <id>` 直接切换到指定会话；`/exit` 退出。恢复会话时会显示此前的用户和助手消息。以 `/` 开头的输入保留为命令。
+
+CLI 会在请求模型和执行工具前显示状态。会话选择只读取现有日志，不会修改日志；打开会话时仍会执行正常的恢复流程。
+
+文件读取支持指定行范围；搜索支持普通文本或 Go 正则表达式，并跳过 `.git` 和被忽略的路径。编辑已有文件前，必须在当前会话中先读取该文件。程序会检查读取后文件是否发生变化，并在替换前再次检查，但无法消除与外部写入程序之间的所有竞争情况。
+
+## 权限
+
+- `ask`：每次修改文件或执行命令时请求确认。
+- `workspace`：允许修改工作区内的文件，执行命令时请求确认。
+- `auto`：允许修改工作区内的文件并自动执行命令。
+
+文件工具的访问范围限制在工作区内。命令没有沙箱隔离，无论工作区范围如何，都可能访问其他文件或网络；仅在信任模型和工作区时选择 `auto`。配置修改将在下次启动时生效。
